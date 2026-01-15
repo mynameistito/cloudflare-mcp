@@ -35,6 +35,11 @@ declare const cloudflare: {
 declare const accountId: string;
 `;
 
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+
 const SPEC_TYPES = `
 interface OperationInfo {
   summary?: string;
@@ -58,7 +63,7 @@ declare const spec: {
 };
 `;
 
-export function createServer(env: Env, apiToken: string): McpServer {
+export function createServer(env: Env, apiToken: string, accountId?: string): McpServer {
   const server = new McpServer({
     name: "cloudflare-api",
     version: "0.1.0",
@@ -114,24 +119,17 @@ async () => {
     async ({ code }) => {
       try {
         const result = await executeSearch(code);
-        return {
-          content: [{ type: "text", text: truncateResponse(result) }],
-        };
+        return { content: [{ type: "text", text: truncateResponse(result) }] };
       } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
         return {
-          content: [{ type: "text", text: `Error: ${errorMessage}` }],
+          content: [{ type: "text", text: `Error: ${formatError(error)}` }],
           isError: true,
         };
       }
     }
   );
 
-  server.registerTool(
-    "execute",
-    {
-      description: `Execute JavaScript code against the Cloudflare API. First use the 'search' tool to find the right endpoints, then write code using the cloudflare.request() function.
+  const executeDescription = `Execute JavaScript code against the Cloudflare API. First use the 'search' tool to find the right endpoints, then write code using the cloudflare.request() function.
 
 Available in your code:
 ${CLOUDFLARE_TYPES}
@@ -160,32 +158,54 @@ async () => {
     contentType: "application/javascript",
     rawBody: true
   });
-}`,
-      inputSchema: {
-        code: z.string().describe("JavaScript async arrow function to execute"),
-        account_id: z
-          .string()
-          .describe(
-            "Your Cloudflare account ID (call GET /accounts to list available accounts)"
-          ),
+}`;
+
+  if (accountId) {
+    // Account token mode: account_id is fixed, not a parameter
+    server.registerTool(
+      "execute",
+      {
+        description: executeDescription,
+        inputSchema: {
+          code: z.string().describe("JavaScript async arrow function to execute"),
+        },
       },
-    },
-    async ({ code, account_id }) => {
-      try {
-        const result = await executeCode(code, account_id, apiToken);
-        return {
-          content: [{ type: "text", text: truncateResponse(result) }],
-        };
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text", text: `Error: ${errorMessage}` }],
-          isError: true,
-        };
+      async ({ code }) => {
+        try {
+          const result = await executeCode(code, accountId, apiToken);
+          return { content: [{ type: "text", text: truncateResponse(result) }] };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: `Error: ${formatError(error)}` }],
+            isError: true,
+          };
+        }
       }
-    }
-  );
+    );
+  } else {
+    // User token mode: account_id is required
+    server.registerTool(
+      "execute",
+      {
+        description: executeDescription,
+        inputSchema: {
+          code: z.string().describe("JavaScript async arrow function to execute"),
+          account_id: z.string().describe("Your Cloudflare account ID (call GET /accounts to list available accounts)"),
+        },
+      },
+      async ({ code, account_id }) => {
+        try {
+          const result = await executeCode(code, account_id, apiToken);
+          return { content: [{ type: "text", text: truncateResponse(result) }] };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: `Error: ${formatError(error)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+  }
 
   return server;
 }

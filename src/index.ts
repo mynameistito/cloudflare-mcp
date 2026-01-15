@@ -1,12 +1,53 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createServer } from "./server";
 
-async function verifyToken(token: string): Promise<boolean> {
-  const response = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const data = await response.json() as { success: boolean };
-  return data.success === true;
+interface CloudflareResponse<T = unknown> {
+  success: boolean;
+  result?: T;
+  errors?: Array<{ code: number; message: string }>;
+}
+
+interface Account {
+  id: string;
+  name: string;
+}
+
+async function verifyToken(token: string): Promise<{ valid: boolean; accountId?: string; error?: string }> {
+  const headers = { Authorization: `Bearer ${token}` };
+
+  try {
+    // Run user token verification and accounts fetch in parallel
+    const [userResponse, accountsResponse] = await Promise.all([
+      fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", { headers }),
+      fetch("https://api.cloudflare.com/client/v4/accounts", { headers }),
+    ]);
+
+    const [userData, accountsData] = await Promise.all([
+      userResponse.json() as Promise<CloudflareResponse>,
+      accountsResponse.json() as Promise<CloudflareResponse<Account[]>>,
+    ]);
+
+    // User token is valid
+    if (userData.success) {
+      return { valid: true };
+    }
+
+    // Try account token path
+    if (!accountsData.success || !accountsData.result?.length) {
+      const errorMsg = userData.errors?.map(e => e.message).join(", ") || "Invalid token";
+      return { valid: false, error: errorMsg };
+    }
+
+    if (accountsData.result.length > 1) {
+      return { valid: false, error: "Token has access to multiple accounts - use a single-account token" };
+    }
+
+    // /accounts succeeded, token is valid - use the account ID
+    return { valid: true, accountId: accountsData.result[0].id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { valid: false, error: `Failed to verify token: ${message}` };
+  }
 }
 
 function extractToken(authHeader: string): string | null {
@@ -14,34 +55,31 @@ function extractToken(authHeader: string): string | null {
   return match ? match[1] : null;
 }
 
+function jsonError(message: string, status: number = 401): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const authHeader = request.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Authorization header required" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonError("Authorization header required");
     }
 
     const token = extractToken(authHeader);
     if (!token) {
-      return new Response(JSON.stringify({ error: "Invalid Authorization header format" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      return jsonError("Invalid Authorization header format");
     }
 
-    const isValid = await verifyToken(token);
-    if (!isValid) {
-      return new Response(JSON.stringify({ error: "Invalid Cloudflare API token" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+    const verification = await verifyToken(token);
+    if (!verification.valid) {
+      return jsonError(verification.error || "Token verification failed");
     }
 
-    const server = createServer(env, token);
-
+    const server = createServer(env, token, verification.accountId);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

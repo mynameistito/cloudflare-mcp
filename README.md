@@ -12,6 +12,15 @@ Uses codemode to avoid dumping too much context to your agent.
 
 Create a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens) with the permissions you need.
 
+Both **user tokens** and **account tokens** are supported:
+
+| Token Type | Description | Requirements |
+|------------|-------------|--------------|
+| User Token | Created at user level, can access multiple accounts | Requires `account_id` parameter on each execute call |
+| Account Token | Scoped to single account | `account_id` auto-detected, no parameter needed |
+
+For account tokens, include the **Account Resources : Read** permission so the server can auto-detect your account ID.
+
 ### Add to Agent
 
 MCP URL: `https://cloudflare-mcp.mattzcarey.workers.dev/mcp`
@@ -117,7 +126,7 @@ search({
   }`,
 });
 
-// 2. Execute API call
+// 2. Execute API call (user token - account_id required)
 execute({
   code: `async () => {
     const response = await cloudflare.request({
@@ -127,6 +136,17 @@ execute({
     return response.result;
   }`,
   account_id: "your-account-id",
+});
+
+// 2. Execute API call (account token - account_id auto-detected)
+execute({
+  code: `async () => {
+    const response = await cloudflare.request({
+      method: "GET",
+      path: \`/accounts/\${accountId}/workers/scripts\`
+    });
+    return response.result;
+  }`,
 });
 ```
 
